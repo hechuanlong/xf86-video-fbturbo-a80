@@ -234,6 +234,7 @@ static void xPutImage(DrawablePtr pDrawable,
     BoxPtr pbox;
     int x1, y1, x2, y2;
 
+
     if (format == XYBitmap || format == XYPixmap ||
     pDrawable->bitsPerPixel != BitsPerPixel(pDrawable->depth)) {
         fbPutImage(pDrawable, pGC, depth, x, y, w, h, leftPad, format, pImage);

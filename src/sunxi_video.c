@@ -133,6 +133,11 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     int y_stride, uv_stride, yuv_size;
     BoxRec dstBox;
 
+    xf86DrvMsg(xf86ScrnToScreen(pScrn)->myNum, X_INFO,
+		    "Image src_x: %d, src_y: %d, src_w: %d, src_h: %d, drw_x: %d, drw_y: %d, "
+		    "drw_w: %d, drw_h: %d, width: %d, height: %d\n",
+		    src_x, src_y, src_w, src_h, drw_x, drw_y, drw_w, drw_h, width, height);
+
     /* Clip */
     x1 = src_x;
     x2 = src_x + src_w;
@@ -144,6 +149,7 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     dstBox.y1 = drw_y;
     dstBox.y2 = drw_y + drw_h;
 
+
     if (!xf86XVClipVideoHelper(&dstBox, &x1, &x2, &y1, &y2, clipBoxes, width, height))
         return Success;
 
@@ -151,6 +157,12 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     dstBox.x2 -= pScrn->frameX0;
     dstBox.y1 -= pScrn->frameY0;
     dstBox.y2 -= pScrn->frameY0;
+
+    xf86DrvMsg(xf86ScrnToScreen(pScrn)->myNum, X_INFO,
+		    "Image dstBox.x1: %d, dstBox.x2: %d, dstBox.y1: %d, dstBox.y2: %d, "
+		    "x1: %ld, x2: %ld, y1: %ld, y2: %ld\n",
+		    dstBox.x1, dstBox.x2, dstBox.y1, dstBox.y2,
+		    x1, x2, y1, y2);
 
     uv_stride = SIMD_ALIGN(width >> 1);
     y_stride  = uv_stride * 2;
@@ -191,8 +203,9 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
             self->colorKeyEnabled = TRUE;
         }
         sunxi_layer_set_yuv420_input_buffer(disp, y_offset, u_offset, v_offset,
-                                            src_w, src_h, y_stride, src_x, src_y);
-        sunxi_layer_set_output_window(disp, drw_x, drw_y, drw_w, drw_h);
+                                            (x2 - x1) >> 16, (y2 - y1) >> 16, y_stride, x1 >> 16, y1 >> 16);
+        sunxi_layer_set_output_window(disp, dstBox.x1, dstBox.y1,
+			dstBox.x2 - dstBox.x1, dstBox.y2 - dstBox.y1);
         sunxi_layer_show(disp);
 
         /* Cycle through different overlay offsets (to prevent tearing) */

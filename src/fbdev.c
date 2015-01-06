@@ -1038,6 +1038,9 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	pScreen->CloseScreen = FBDevCloseScreen;
 
 #if XV
+	xf86DrvMsg(pScrn->scrnIndex, X_INFO,
+			"using sunxi disp layers for X video extension\n");
+
 	fPtr->SunxiVideo_private = NULL;
 	if (xf86ReturnOptValBool(fPtr->Options, OPTION_XV_OVERLAY, TRUE) &&
 	fPtr->sunxi_disp_private) {

@@ -36,6 +36,7 @@
 #include "sunxi_video.h"
 #include "sunxi_disp.h"
 
+
 /*****************************************************************************/
 
 #ifndef ARRAY_SIZE
@@ -62,16 +63,18 @@ static uint32_t convert_color(ScrnInfoPtr pScrn, uint32_t color)
 static void
 xStopVideo(ScrnInfoPtr pScrn, pointer data, Bool cleanup)
 {
+#if 1
     SunxiVideo *self = SUNXI_VIDEO(pScrn);
     sunxi_disp_t *disp = SUNXI_DISP(pScrn);
 
     if (disp && cleanup) {
+	//sunxi_layer_disable_colorkey(disp);
         sunxi_layer_hide(disp);
-        sunxi_layer_disable_colorkey(disp);
         self->colorKeyEnabled = FALSE;
     }
 
     REGION_EMPTY(pScrn->pScreen, &self->clip);
+#endif
 }
 
 static int
@@ -133,11 +136,6 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     int y_stride, uv_stride, yuv_size;
     BoxRec dstBox;
 
-    xf86DrvMsg(xf86ScrnToScreen(pScrn)->myNum, X_INFO,
-		    "Image src_x: %d, src_y: %d, src_w: %d, src_h: %d, drw_x: %d, drw_y: %d, "
-		    "drw_w: %d, drw_h: %d, width: %d, height: %d\n",
-		    src_x, src_y, src_w, src_h, drw_x, drw_y, drw_w, drw_h, width, height);
-
     /* Clip */
     x1 = src_x;
     x2 = src_x + src_w;
@@ -158,11 +156,6 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     dstBox.y1 -= pScrn->frameY0;
     dstBox.y2 -= pScrn->frameY0;
 
-    xf86DrvMsg(xf86ScrnToScreen(pScrn)->myNum, X_INFO,
-		    "Image dstBox.x1: %d, dstBox.x2: %d, dstBox.y1: %d, dstBox.y2: %d, "
-		    "x1: %ld, x2: %ld, y1: %ld, y2: %ld\n",
-		    dstBox.x1, dstBox.x2, dstBox.y1, dstBox.y2,
-		    x1, x2, y1, y2);
 
     uv_stride = SIMD_ALIGN(width >> 1);
     y_stride  = uv_stride * 2;
@@ -204,6 +197,7 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
         }
         sunxi_layer_set_yuv420_input_buffer(disp, y_offset, u_offset, v_offset,
                                             (x2 - x1) >> 16, (y2 - y1) >> 16, y_stride, x1 >> 16, y1 >> 16);
+
         sunxi_layer_set_output_window(disp, dstBox.x1, dstBox.y1,
 			dstBox.x2 - dstBox.x1, dstBox.y2 - dstBox.y1);
         sunxi_layer_show(disp);
@@ -226,8 +220,16 @@ xReputImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_
           short src_w, short src_h, short drw_w, short drw_h,
           RegionPtr clipBoxes, pointer data, DrawablePtr pDraw)
 {
-    sunxi_disp_t *disp = SUNXI_DISP(pScrn);
-    sunxi_layer_set_output_window(disp, drw_x, drw_y, drw_w, drw_h);
+	sunxi_disp_t *disp = SUNXI_DISP(pScrn);
+	SunxiVideo *self = SUNXI_VIDEO(pScrn);
+
+	sunxi_resize_layer_window(disp, drw_x, drw_y, drw_w, drw_h, src_x, src_y, src_w, src_h);
+    /* Update the areas filled with the color key */
+    if (!REGION_EQUAL(pScrn->pScreen, &self->clip, clipBoxes)) {
+        REGION_COPY(pScrn->pScreen, &self->clip, clipBoxes);
+        xf86XVFillKeyHelperDrawable(pDraw, convert_color(pScrn, self->colorKey), clipBoxes);
+    }
+
     return Success;
 }
 

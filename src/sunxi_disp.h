@@ -27,6 +27,7 @@
 #include <inttypes.h>
 
 #include "interfaces.h"
+#include "sunxi_ion.h"
 
 /*
  * Support for Allwinner A10 display controller features such as layers
@@ -65,6 +66,11 @@ typedef struct {
     blt2d_i             blt2d;
     /* Optional fallback interface to handle unsupported operations */
     blt2d_i            *fallback_blt2d;
+
+    /*ion*/
+    struct ion_handle_data handle_data;  /* ion handle */
+    void *buffer_addr;  /* mmapped address */
+    int ion_fd; 
 } sunxi_disp_t;
 
 sunxi_disp_t *sunxi_disp_init(const char *fb_device, void *xserver_fbmem);
@@ -115,11 +121,20 @@ int sunxi_layer_disable_colorkey(sunxi_disp_t *ctx);
 
 int sunxi_layer_show(sunxi_disp_t *ctx);
 int sunxi_layer_hide(sunxi_disp_t *ctx);
+int sunxi_resize_layer_window(sunxi_disp_t *disp, int x, int y, int w, int h, int sx, int sy, int sw, int sh);
 
 /*
  * Wait for vsync
  */
 int sunxi_wait_for_vsync(sunxi_disp_t *ctx);
+
+
+/*
+ * ion
+ */
+void* sunxi_ion_alloc(sunxi_disp_t *disp, int len);
+int sunxi_ion_free(sunxi_disp_t *disp);
+
 
 /*
  * Simple G2D fill and blit operations

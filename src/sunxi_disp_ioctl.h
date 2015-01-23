@@ -409,8 +409,8 @@ typedef enum
 
 typedef struct
 {
-	unsigned int          addr[3];    // frame buffer¦Ì??¨²¨¨Y¦Ì??¡¤¡ê???¨®¨²rgb¨¤¨¤D¨ª¡ê???¨®Daddr[0]¨®DD¡ì
-	disp_size             size;//¦Ì£¤??¨º?pixel
+	unsigned int          addr[3];    // frame buffer\A6\CC??\A8\B2\A8\A8Y\A6\CC??\A1\A4\A1\EA???\A8\AE\A8\B2rgb\A8\A4\A8\A4D\A8\AA\A1\EA???\A8\AEDaddr[0]\A8\AEDD\A1\EC
+	disp_size             size;//\A6Ì£\A4??\A8\BA?pixel
 	disp_pixel_format     format;
 	disp_cs_mode          cs_mode;    //color space
 	bool                  b_trd_src; //if 3d source, used for scaler mode layer
@@ -431,7 +431,7 @@ typedef struct
 {
     disp_layer_mode           mode;       //layer work mode
     unsigned char             pipe;       //layer pipe,0/1
-    unsigned char             zorder;     //layer priority,can get layer prio,but never set layer prio,¡ä¨®¦Ì¡Á?¨¢?£¤,¨®??¨¨??¨®¨¦¦Ì¨ª?¨¢??
+    unsigned char             zorder;     //layer priority,can get layer prio,but never set layer prio,\A1ä¨®\A6Ì¡\C1?\A8\A2?\A3\A4,\A8\AE??\A8\A8??\A8\AE\A8\A6\A6Ì¨\AA?\A8\A2??
     unsigned char             alpha_mode;   //0: pixel alpha;  1: global alpha;  2: global pixel alpha
     unsigned char             alpha_value;  //layer global alpha value
     bool                      ck_enable;  //layer color key enable
@@ -737,6 +737,8 @@ typedef enum tag_DISP_CMD
 	DISP_CMD_HWC_GET_DISP_READY = 0x0F,
 
 	//----layer----
+	//DISP_CMD_LAYER_REQUEST = 0x40,
+	//DISP_CMD_LAYER_release = 0x41,
 	DISP_CMD_LAYER_ENABLE = 0x40,
 	DISP_CMD_LAYER_DISABLE = 0x41,
 	DISP_CMD_LAYER_SET_INFO = 0x42,
@@ -744,6 +746,11 @@ typedef enum tag_DISP_CMD
 	DISP_CMD_LAYER_TOP = 0x44,
 	DISP_CMD_LAYER_BOTTOM = 0x45,
 	DISP_CMD_LAYER_GET_FRAME_ID = 0x46,
+	DISP_CMD_LAYER_CK_ON = 0x51,
+	DISP_CMD_LAYER_CK_OFF = 0x52,
+	DISP_CMD_LAYER_CK_EN = 0x53,
+	DISP_CMD_LAYER_ALPHA_ON =0x4c,
+	DISP_CMD_LAYER_ALPHA_OFF = 0x4d,
 
 	//----hwc----
 	DISP_CMD_CURSOR_ENABLE = 0x80,

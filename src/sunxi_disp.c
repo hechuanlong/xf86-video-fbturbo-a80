@@ -29,10 +29,13 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <stdio.h>
 
 #include "sunxi_disp.h"
 #include "sunxi_disp_ioctl.h"
 #include "g2d_driver.h"
+#include "sunxi_ion.h"
+
 
 /*****************************************************************************/
 
@@ -137,7 +140,6 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
 	ctx->cursor_enabled = 0;
 	ctx->cursor_x = -1;
 	ctx->cursor_y = -1;
-	ctx->gfx_layer_id = 0;
 
 	/* Get the id of the screen layer */
 	//if (ioctl(ctx->fd_fb,
@@ -150,6 +152,30 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
 	//    return NULL;
 	//}
 
+	ctx->fd_g2d = open("/dev/g2d", O_RDWR);
+
+	ctx->blt2d.self = ctx;
+	ctx->blt2d.overlapped_blt = sunxi_g2d_blt;
+
+	/* use layer 1 for screen */
+	uint32_t args[4];
+	disp_layer_info layer_win;
+	ctx->gfx_layer_id = 1;
+	ctx->layer_id = 0;
+	args[0] = ctx->fb_id;
+	args[1] = 0;
+	args[2] = (uintptr_t)&layer_win;
+	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_GET_INFO, &args) < 0)
+		return -1;
+	args[0] = ctx->fb_id;
+	args[1] = 1;
+	args[2] = (uintptr_t)&layer_win;
+	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &args) < 0)
+		return -1;
+	ioctl(ctx->fd_disp, DISP_CMD_LAYER_ENABLE, &args);
+	args[1] = 0;
+	ioctl(ctx->fd_disp, DISP_CMD_LAYER_DISABLE, &args);
+
 	if (sunxi_layer_reserve(ctx) < 0)
 	{
 		close(ctx->fd_fb);
@@ -158,10 +184,9 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
 		return NULL;
 	}
 
-	ctx->fd_g2d = open("/dev/g2d", O_RDWR);
+	ctx->handle_data.handle = sunxi_ion_alloc(ctx, ctx->framebuffer_size);
 
-	ctx->blt2d.self = ctx;
-	ctx->blt2d.overlapped_blt = sunxi_g2d_blt;
+
 
 	return ctx;
 }
@@ -174,6 +199,21 @@ int sunxi_disp_close(sunxi_disp_t *ctx)
 		}
 		/* release layer */
 		sunxi_layer_release(ctx);
+		uint32_t tmp[4];
+		disp_layer_info layer_win;
+		ctx->gfx_layer_id = 0;
+		ctx->layer_id = 1;
+		tmp[0] = ctx->fb_id;
+		tmp[1] = 1;
+		tmp[2] = (uintptr_t)&layer_win;
+		if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_GET_INFO, &tmp) < 0)
+			return -1;
+		tmp[0] = ctx->fb_id;
+		tmp[1] = 0;
+		tmp[2] = (uintptr_t)&layer_win;
+		if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp) < 0)
+		ioctl(ctx->fd_disp, DISP_CMD_LAYER_ENABLE, &tmp);
+			return -1;
 		/* disable cursor */
 		if (ctx->cursor_enabled)
 			sunxi_hw_cursor_hide(ctx);
@@ -183,6 +223,8 @@ int sunxi_disp_close(sunxi_disp_t *ctx)
 		close(ctx->fd_fb);
 		close(ctx->fd_disp);
 		ctx->fd_disp = -1;
+		if(!ctx->buffer_addr)
+			sunxi_ion_free(ctx->handle_data.handle);
 		free(ctx);
 	}
 	return 0;
@@ -300,7 +342,7 @@ int sunxi_layer_reserve(sunxi_disp_t *ctx)
 	uint32_t tmp[4];
 
 	/* try to allocate a layer */
-	ctx->layer_id = 1;
+	/* ctx->layer_id = 1; //hcl:use layer 0 for video */
 #if 0
 	tmp[0] = ctx->fb_id;
 	tmp[1] = DISP_LAYER_WORK_MODE_NORMAL;
@@ -408,35 +450,6 @@ int sunxi_layer_set_rgb_input_buffer(sunxi_disp_t *ctx,
 	layer_info.fb.src_win.height = rect.height;
 
 	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp);
-#if 0
-	fb.addr[0] = ctx->framebuffer_paddr + offset_in_framebuffer;
-	fb.size.height = height;
-	if (bpp == 32) {
-		fb.format = DISP_FORMAT_ARGB_8888;
-	} else if (bpp == 16) {
-		fb.format = DISP_FORMAT_RGB565;
-		fb.size.width = stride * 2;
-	} else {
-		return -1;
-	}
-
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	tmp[2] = (uintptr_t)&fb;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_FB, &tmp) < 0)
-		return -1;
-
-	ctx->layer_buf_x = rect.x;
-	ctx->layer_buf_y = rect.y;
-	ctx->layer_buf_w = rect.width;
-	ctx->layer_buf_h = rect.height;
-	ctx->layer_format = fb.format;
-
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	tmp[2] = (uintptr_t)&rect;
-	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_SRC_WINDOW, &tmp);
-#endif
 }
 
 int sunxi_layer_set_yuv420_input_buffer(sunxi_disp_t *ctx,
@@ -484,33 +497,7 @@ int sunxi_layer_set_yuv420_input_buffer(sunxi_disp_t *ctx,
 	layer_info.fb.src_win.height = rect.height;
 
 	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp);
-#if 0   
-	fb.addr[0] = ctx->framebuffer_paddr + y_offset_in_framebuffer;
-	fb.addr[1] = ctx->framebuffer_paddr + u_offset_in_framebuffer;
-	fb.addr[2] = ctx->framebuffer_paddr + v_offset_in_framebuffer;
-	fb.size.width = stride;
-	fb.size.height = height;
-	fb.format = DISP_FORMAT_YUV420;
-	fb.seq = DISP_SEQ_P3210;
-	fb.mode = DISP_MOD_NON_MB_PLANAR;
 
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	tmp[2] = (uintptr_t)&fb;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_FB, &tmp) < 0)
-		return -1;
-
-	ctx->layer_buf_x = rect.x;
-	ctx->layer_buf_y = rect.y;
-	ctx->layer_buf_w = rect.width;
-	ctx->layer_buf_h = rect.height;
-	ctx->layer_format = fb.format;
-
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	tmp[2] = (uintptr_t)&rect;
-	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_SRC_WINDOW, &tmp);
-#endif
 }
 
 int sunxi_layer_set_output_window(sunxi_disp_t *ctx, int x, int y, int w, int h)
@@ -587,6 +574,7 @@ int sunxi_layer_set_output_window(sunxi_disp_t *ctx, int x, int y, int w, int h)
 		memcpy(&layer_info.fb.src_win, &buf_rect, sizeof(disp_window));
 		if ((err = ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp)))
 			return err;
+		fprintf(stderr,"ctx->layer_win_y <0 %d\n",ctx->layer_win_y);
 	}
 	/* Save the new non-adjusted window position */
 	ctx->layer_win_x = x;
@@ -602,6 +590,7 @@ int sunxi_layer_set_output_window(sunxi_disp_t *ctx, int x, int y, int w, int h)
 	memcpy(&layer_info.screen_win, &win_rect, sizeof(disp_window));
 	if ((err = ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp)))
 		return err;
+
 }
 
 int sunxi_layer_show(sunxi_disp_t *ctx)
@@ -619,7 +608,8 @@ int sunxi_layer_show(sunxi_disp_t *ctx)
 
 	tmp[0] = ctx->fb_id;
 	tmp[1] = ctx->layer_id;
-	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_ENABLE, &tmp);
+	ioctl(ctx->fd_disp, DISP_CMD_LAYER_ENABLE, &tmp);
+
 }
 
 int sunxi_layer_hide(sunxi_disp_t *ctx)
@@ -639,13 +629,19 @@ int sunxi_layer_hide(sunxi_disp_t *ctx)
 	tmp[0] = ctx->fb_id;
 	tmp[1] = ctx->layer_id;
 	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_DISABLE, &tmp);
+#if 0
+	tmp[0] = ctx->fb_id;
+	tmp[1] = 2;
+	return ioctl(ctx->fd_disp, DISP_CMD_LAYER_DISABLE, &tmp);
+#endif
 }
 
 int sunxi_layer_set_colorkey(sunxi_disp_t *ctx, uint32_t color)
 {
-#if 0
+
+
 	uint32_t tmp[4];
-	__disp_colorkey_t colorkey;
+	disp_colorkey colorkey;
 	disp_color_info disp_color;
 
 	disp_color.alpha = (color >> 24) & 0xFF;
@@ -663,59 +659,33 @@ int sunxi_layer_set_colorkey(sunxi_disp_t *ctx, uint32_t color)
 	tmp[1] = (uintptr_t)&colorkey;
 	if (ioctl(ctx->fd_disp, DISP_CMD_SET_COLORKEY, &tmp))
 		return -1;
-
-	/* Set the overlay layer below the screen layer */
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->gfx_layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_BOTTOM, &tmp) < 0)
-		return -1;
-
+	disp_layer_info layer_video;
 	tmp[0] = ctx->fb_id;
 	tmp[1] = ctx->layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_BOTTOM, &tmp) < 0)
+	tmp[2] = (uintptr_t)&layer_video;
+	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_GET_INFO, &tmp) < 0)
+		return -1;
+	layer_video.ck_enable = 1;
+	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp) < 0)
 		return -1;
 
-	/* Enable color key for the overlay layer */
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_CK_ON, &tmp) < 0)
-		return -1;
-
-	/* Disable color key and enable global alpha for the screen layer */
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->gfx_layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_CK_OFF, &tmp) < 0)
-		return -1;
-
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->gfx_layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_ALPHA_ON, &tmp) < 0)
-		return -1;
-#endif
 	return 0;
 }
 
 int sunxi_layer_disable_colorkey(sunxi_disp_t *ctx)
 {
+
 	uint32_t tmp[4];
-#if 0
-	/* Disable color key for the overlay layer */
+	disp_layer_info layer_video;
+
+	layer_video.ck_enable = 0;
 	tmp[0] = ctx->fb_id;
 	tmp[1] = ctx->layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_CK_OFF, &tmp) < 0)
+	tmp[2] = (uintptr_t)&layer_video;
+
+	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp) < 0)
 		return -1;
 
-	/* Set the overlay layer above the screen layer */
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_BOTTOM, &tmp) < 0)
-		return -1;
-
-	tmp[0] = ctx->fb_id;
-	tmp[1] = ctx->gfx_layer_id;
-	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_BOTTOM, &tmp) < 0)
-		return -1;
-#endif
 	return 0;
 }
 
@@ -976,8 +946,13 @@ int sunxi_g2d_blt(void               *self,
 		return FALLBACK_BLT();
 
 	/* Unsupported overlapping type */
-	if (src_bits == dst_bits && src_y == dst_y && src_x + 1 < dst_x)
+	/*hcl add:we add a ion buffer to support it!
+	 */
+	if (src_bits == dst_bits  && ((src_y < dst_y) || (src_y == dst_y && src_x  < dst_x)) && disp->buffer_addr == NULL)
+	{
+		fprintf(stderr,"FALLBACK_BLT() disp->buffer_addr=%x\n",disp->buffer_addr);
 		return FALLBACK_BLT();
+	}
 
 	if (disp->fd_g2d < 0)
 		return FALLBACK_BLT();
@@ -1030,6 +1005,212 @@ int sunxi_g2d_blt(void               *self,
 		tmp.dst_image.format    = G2D_FMT_RGB565;
 		tmp.dst_image.pixel_seq = G2D_SEQ_P10;
 	}
+	/*hcl add:support overlapping type
+	 *
+	 */
+	if(src_bits == dst_bits  && ((src_y < dst_y) || (src_y == dst_y && src_x  < dst_x)))
+	{
+		tmp.dst_image.addr[0]       = disp->buffer_addr;
+		tmp.dst_x                   = 0;
+		tmp.dst_y                   = 0;
+		ioctl(disp->fd_g2d, G2D_CMD_BITBLT, &tmp);
+		tmp.dst_x                   = dst_x;
+		tmp.dst_y                   = dst_y;
+		tmp.src_rect.x              = 0;
+		tmp.src_rect.y              = 0;
+		tmp.dst_image.addr[0]       = disp->framebuffer_paddr +
+			((uint8_t *)dst_bits - disp->framebuffer_addr);
+		tmp.src_image.addr[0]       = disp->buffer_addr;
+	}
 
 	return ioctl(disp->fd_g2d, G2D_CMD_BITBLT, &tmp) == 0;
 }
+
+
+int sunxi_g2d_stretchblt(void *self,short src_w, short src_h, unsigned char *buf,uint32_t y,uint32_t u,uint32_t v)
+{
+	g2d_stretchblt str;
+	g2d_image image_front,scn;
+	g2d_rect src_rect,dst_rect;
+	sunxi_disp_t *disp = (sunxi_disp_t *)self;
+	
+	image_front.addr[0] = buf;
+	image_front.w = src_w;
+	image_front.h = src_h;
+	image_front.format = G2D_FMT_PYUV420UVC;
+	image_front.pixel_seq = G2D_SEQ_NORMAL;
+	image_front.addr[1] = buf+image_front.w*image_front.h;
+
+	scn.addr[0] = disp->framebuffer_paddr;
+	scn.w = src_w;
+	scn.h = src_h;
+	scn.format = G2D_FMT_XRGB8888;
+	scn.pixel_seq = G2D_SEQ_NORMAL;
+	src_rect.x = 0;
+	src_rect.y = 0;
+	src_rect.w = src_w;
+	src_rect.h =src_h;
+	dst_rect.x = 0;
+	dst_rect.y = 0;
+	dst_rect.w = src_w;
+	dst_rect.h =src_h;
+	str.flag = G2D_BLT_NONE;
+	str.color                   = 0;
+	str.alpha                   = 0;
+	
+	str.src_image.addr[0] = image_front.addr[0];
+	str.src_image.addr[1] = image_front.addr[1];
+	str.src_image.w = image_front.w;
+	str.src_image.h = image_front.h;
+	str.src_image.format = image_front.format;
+	str.src_image.pixel_seq = image_front.pixel_seq;
+	str.src_rect.x = src_rect.x;
+	str.src_rect.y = src_rect.y;
+	str.src_rect.w = src_rect.w;
+	str.src_rect.h = src_rect.h;
+	
+	str.dst_image.addr[0] = scn.addr[0];
+	str.dst_image.w = scn.w;
+	str.dst_image.h = scn.h;
+	str.dst_image.format = scn.format;
+	str.dst_image.pixel_seq = scn.pixel_seq;
+	str.dst_rect.x = dst_rect.x;
+	str.dst_rect.y = dst_rect.y;
+	str.dst_rect.w = dst_rect.w;
+	str.dst_rect.h = dst_rect.h;
+	int ret = ioctl(disp->fd_g2d,G2D_CMD_BITBLT, &str);//G2D_CMD_BITBLT G2D_CMD_STRETCHBLT
+	if(ret < 0)
+	{
+		fprintf(stderr,"g2d_stretchblt error! ret=%d\n",ret);
+		
+	}
+	return ret;
+	
+}
+void* sunxi_ion_alloc(sunxi_disp_t *disp, int len)
+{
+	struct ion_allocation_data alloc_data;
+	if(len <= 0)
+		return NULL;
+	disp->ion_fd = NULL;	
+	int ret = -1, fd;
+
+	if((fd = open(ION_DEV_NAME, O_RDWR)) < 0) {
+		fprintf(stderr,"%s(%d) err: open %s dev failed\n", __func__, __LINE__, ION_DEV_NAME);
+		return -1;
+	}
+
+	/* alloc buffer */
+	alloc_data.len = len;
+	alloc_data.align = ION_ALLOC_ALIGN;
+	alloc_data.heap_id_mask = ION_HEAP_CARVEOUT_MASK;//ION_HEAP_TYPE_DMA_MASK;// | ION_HEAP_SYSTEM_CONTIG_MASK;
+	alloc_data.flags = ION_FLAG_CACHED | ION_FLAG_CACHED_NEEDS_SYNC;
+	ret = ioctl(fd, ION_IOC_ALLOC, &alloc_data);
+	if(ret) {
+		fprintf(stderr,"%s(%d): ION_IOC_ALLOC err, ret %d, handle 0x%08x\n", __func__, __LINE__, ret, (unsigned int)alloc_data.handle);
+		close(fd);
+		return NULL;
+	}
+	disp->ion_fd = fd;
+	disp->handle_data.handle = alloc_data.handle;
+	
+	struct ion_fd_data fd_data;
+	
+	/* map dma buffer fd */
+	fd_data.handle = alloc_data.handle;
+	ret = ioctl(disp->ion_fd, ION_IOC_MAP, &fd_data);
+	if(ret) {
+		fprintf(stderr,"%s(%d): ION_IOC_MAP err, ret %d, dmabuf fd 0x%08x\n", __func__, __LINE__, ret, (unsigned int)fd_data.fd);
+		return NULL;
+	}
+
+
+	/* mmap to user */
+	disp->buffer_addr = mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED, fd_data.fd, 0);
+	if(MAP_FAILED == disp->buffer_addr) {
+		fprintf(stderr,"%s(%d): mmap err, ret %d\n", __func__, __LINE__, (unsigned int)disp->buffer_addr);
+	}
+
+
+	return disp->buffer_addr;
+}
+
+int sunxi_ion_free(sunxi_disp_t *disp)
+{
+	int ret = -1;
+	if(disp->handle_data.handle == NULL)
+		return NULL;
+	munmap(disp->buffer_addr, disp->framebuffer_size);
+	ret = ioctl(disp->ion_fd, ION_IOC_FREE, &(disp->handle_data.handle));
+	if(ret) {
+		fprintf(stderr,"%s(%d): ION_IOC_FREE err, ret %d\n", __func__, __LINE__, ret);
+		goto out;
+	}
+
+	ret = 0;
+out:
+	close(disp->ion_fd);
+	return ret;
+}
+
+int sunxi_resize_layer_window(sunxi_disp_t *disp, int drw_x, int drw_y, int drw_w, int drw_h, int src_x, int src_y, int src_w, int src_h)
+{
+	int x,y,w,h;
+	int sx,sy,sw,sh;
+	x = drw_x;
+	y = drw_y;
+	w = drw_w;
+	h = drw_h;
+	sx = src_x;
+	sy = src_y;
+	sw = src_w;
+	sh = src_h;
+	if(drw_x < 0)
+	{
+		x = 0;
+		w = drw_x + drw_w;
+		sx = 0-(drw_x * ((float)src_w/drw_w));
+		sw = w * ((float)src_w/drw_w);
+	}
+	else if(drw_x+drw_w > src_w)
+	{
+		w = src_w - drw_x;
+		sw = w * ((float)src_w/drw_w);
+	}
+
+	if(drw_y < 0)
+	{
+		y = 0;
+		h = drw_h + drw_y;
+		sy = 0-(drw_y * ((float)src_h/drw_h));
+		sh = h * ((float)src_h/drw_h);
+	}
+	else if(drw_y+drw_h > src_h)
+	{
+		h = src_h - drw_y;
+		sh = h * ((float)src_h/drw_h);
+	}
+
+	disp_layer_info layer_video;
+	uint32_t tmp[4];
+	tmp[0] = disp->fb_id;
+	tmp[1] = disp->layer_id;
+	tmp[2] = (uintptr_t)&layer_video;
+	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_GET_INFO, tmp) < 0)
+		return -1;
+	layer_video.fb.src_win.x =sx;
+	layer_video.fb.src_win.y =sy;
+	layer_video.fb.src_win.width =sw;
+	layer_video.fb.src_win.height =sh;
+	layer_video.screen_win.x =x;
+	layer_video.screen_win.y =y;
+	layer_video.screen_win.width =w;
+	layer_video.screen_win.height =h;
+	tmp[0] = disp->fb_id;
+	tmp[1] = disp->layer_id;
+	tmp[2] = (uintptr_t)&layer_video;
+	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_SET_INFO, tmp) < 0)
+		return -1;
+
+}
+

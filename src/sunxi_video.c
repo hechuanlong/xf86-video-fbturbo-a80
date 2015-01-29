@@ -36,7 +36,16 @@
 #include "sunxi_video.h"
 #include "sunxi_disp.h"
 
+/* This is display device resolution width*height*refresh rate. */
+#define DISPLAY_RESOLUTION 1920*1080*60
 
+/* 如果视频缩放时会出现屏幕被拉伸，说明你的内核或者sys_config.fex和我调试的不匹配
+ * 那么你需要减少这个宏定义到值，EFFICIENCE的取值范围在0.8～2.7
+ * 当然，这个值在取值范围内尽可能取大一点
+ * If screen is stretch when resize video player window, then you need to reduce 
+ * EFFICIENCE value. The value range of EFFICIENCE if 0.8~2.7
+ */
+#define EFFICIENCE 2.6
 /*****************************************************************************/
 
 #ifndef ARRAY_SIZE
@@ -156,7 +165,6 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
     dstBox.y1 -= pScrn->frameY0;
     dstBox.y2 -= pScrn->frameY0;
 
-
     uv_stride = SIMD_ALIGN(width >> 1);
     y_stride  = uv_stride * 2;
     yuv_size  = y_stride * height + uv_stride * height;
@@ -184,25 +192,75 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
         if (self->overlay_data_offs + yuv_size > disp->framebuffer_size)
             return BadImplementation;
 
-        y_offset += self->overlay_data_offs;
-        u_offset += self->overlay_data_offs;
-        v_offset += self->overlay_data_offs;
-
-        memcpy(disp->framebuffer_addr + self->overlay_data_offs, buf, yuv_size);
-
         /* Enable colorkey if it has not been already enabled */
         if (!self->colorKeyEnabled) {
             sunxi_layer_set_colorkey(disp, self->colorKey);
             self->colorKeyEnabled = TRUE;
         }
-        sunxi_layer_set_yuv420_input_buffer(disp, y_offset, u_offset, v_offset,
-                                            (x2 - x1) >> 16, (y2 - y1) >> 16, y_stride, x1 >> 16, y1 >> 16);
 
-        sunxi_layer_set_output_window(disp, dstBox.x1, dstBox.y1,
-			dstBox.x2 - dstBox.x1, dstBox.y2 - dstBox.y1);
+	int y,u,v;
+
+
+	y_offset += self->overlay_data_offs;
+	u_offset += self->overlay_data_offs;
+	v_offset += self->overlay_data_offs;
+
+	double required_clk = (double)(src_w*src_h)*DISPLAY_RESOLUTION/(drw_w*drw_h*EFFICIENCE);
+	if(required_clk > 396000000.0)
+	{
+		/* hcl add: convert image and display
+		 * setp1: copy and convert to NV12 (ion buffer)
+		 * setp2: scale to draw size and copy to framebuffer by use G2D
+		 * step3: display 
+		 */
+		char * buffer_addr_uv = NULL;
+		if(image == FOURCC_I420)
+		{
+			y = y_offset - self->overlay_data_offs;
+			u = u_offset - self->overlay_data_offs;
+			v = v_offset - self->overlay_data_offs;
+			buffer_addr_uv = (char *)disp->buffer_addr+self->overlay_data_offs+u;
+			for(int i = 0; i < v-u; i++)
+			{
+				buffer_addr_uv[2*i] = buf[u+i];
+				buffer_addr_uv[2*i+1] = buf[v+i];
+			}
+		}
+		else if(image == FOURCC_YV12)
+		{
+			y = y_offset - self->overlay_data_offs;
+			u = v_offset - self->overlay_data_offs;
+			v = u_offset - self->overlay_data_offs;
+			buffer_addr_uv = (char *)disp->buffer_addr+self->overlay_data_offs+u;
+			for(int i = 0; i < v-u; i++)
+			{
+				buffer_addr_uv[2*i] = buf[v+i];
+				buffer_addr_uv[2*i+1] = buf[u+i];
+			}
+		}
+
+		memcpy(disp->buffer_addr+self->overlay_data_offs, buf, u - y);
+		sunxi_g2d_stretchblt(disp, width, height,src_w,src_h, self->overlay_data_offs,y, u, v,drw_w,drw_h);
+		sunxi_layer_set_rgb_input_buffer(disp, 32, self->overlay_data_offs, drw_w, drw_h, drw_w);
+		sunxi_resize_layer_window(disp, drw_x, drw_y, drw_w,  drw_h, src_x, src_y, drw_w, drw_h);
+	}
+	else{
+
+	        memcpy(disp->framebuffer_addr + self->overlay_data_offs, buf, yuv_size);
+	        sunxi_layer_set_yuv420_input_buffer(disp, y_offset, u_offset, v_offset,
+                                            (x2 - x1) >> 16, (y2 - y1) >> 16, y_stride, x1 >> 16, y1 >> 16);
+	        sunxi_layer_set_output_window(disp, dstBox.x1, dstBox.y1,
+			dstBox.x2 - dstBox.x1, dstBox.y2 - dstBox.y1);		
+	}
+
         sunxi_layer_show(disp);
 
-        /* Cycle through different overlay offsets (to prevent tearing) */
+        /* Cycle through different overlay offsets (to prevent tearing)   */
+	/* Fix me. when image format is ARGB8888 and image size is enough
+	 * big, tearing and data out of range will happen!
+	 * This bug appear depend on EFFICIENCE and framebuffer_size
+	 * -_- Don't blame me lazy.
+	 */
         self->overlay_data_offs += yuv_size;
     }
 

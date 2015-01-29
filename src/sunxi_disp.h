@@ -70,6 +70,7 @@ typedef struct {
     /*ion*/
     struct ion_handle_data handle_data;  /* ion handle */
     void *buffer_addr;  /* mmapped address */
+    uintptr_t buffer_paddr;  /* physical address */
     int ion_fd; 
 } sunxi_disp_t;
 
@@ -135,6 +136,8 @@ int sunxi_wait_for_vsync(sunxi_disp_t *ctx);
 void* sunxi_ion_alloc(sunxi_disp_t *disp, int len);
 int sunxi_ion_free(sunxi_disp_t *disp);
 
+
+int sunxi_g2d_stretchblt(void *disp,short src_w, short src_h, short w, short h,uint32_t offset,uint32_t y,uint32_t u,uint32_t v,short dst_w,short dst_h);
 
 /*
  * Simple G2D fill and blit operations

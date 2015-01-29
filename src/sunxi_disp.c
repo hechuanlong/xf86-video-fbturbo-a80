@@ -65,6 +65,7 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
 		return NULL;
 	}
 #if 1 //Sugar
+	/* on A80 for HDMI */
 	ctx->fb_id = 1;
 #endif
 
@@ -166,12 +167,12 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
 	args[1] = 0;
 	args[2] = (uintptr_t)&layer_win;
 	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_GET_INFO, &args) < 0)
-		return -1;
+		return NULL;
 	args[0] = ctx->fb_id;
 	args[1] = 1;
 	args[2] = (uintptr_t)&layer_win;
 	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &args) < 0)
-		return -1;
+		return NULL;
 	ioctl(ctx->fd_disp, DISP_CMD_LAYER_ENABLE, &args);
 	args[1] = 0;
 	ioctl(ctx->fd_disp, DISP_CMD_LAYER_DISABLE, &args);
@@ -343,6 +344,7 @@ int sunxi_layer_reserve(sunxi_disp_t *ctx)
 
 	/* try to allocate a layer */
 	/* ctx->layer_id = 1; //hcl:use layer 0 for video */
+	/* On the A80 platform,no need request a layer, just GET/SET a layer info */
 #if 0
 	tmp[0] = ctx->fb_id;
 	tmp[1] = DISP_LAYER_WORK_MODE_NORMAL;
@@ -479,7 +481,7 @@ int sunxi_layer_set_yuv420_input_buffer(sunxi_disp_t *ctx,
 			return -1;
 	}
 
-	tmp[0] = 1; //ctx->fb_id;
+	tmp[0] = ctx->fb_id;
 	tmp[1] = ctx->layer_id;
 	tmp[2] = (uintptr_t)&layer_info;
 	if (ioctl(ctx->fd_disp, DISP_CMD_LAYER_GET_INFO, &tmp) < 0)
@@ -574,7 +576,6 @@ int sunxi_layer_set_output_window(sunxi_disp_t *ctx, int x, int y, int w, int h)
 		memcpy(&layer_info.fb.src_win, &buf_rect, sizeof(disp_window));
 		if ((err = ioctl(ctx->fd_disp, DISP_CMD_LAYER_SET_INFO, &tmp)))
 			return err;
-		fprintf(stderr,"ctx->layer_win_y <0 %d\n",ctx->layer_win_y);
 	}
 	/* Save the new non-adjusted window position */
 	ctx->layer_win_x = x;
@@ -948,9 +949,9 @@ int sunxi_g2d_blt(void               *self,
 	/* Unsupported overlapping type */
 	/*hcl add:we add a ion buffer to support it!
 	 */
-	if (src_bits == dst_bits  && ((src_y < dst_y) || (src_y == dst_y && src_x  < dst_x)) && disp->buffer_addr == NULL)
+	if (src_bits == dst_bits  && ((src_y < dst_y) || (src_y == dst_y && src_x  < dst_x)) && disp->buffer_paddr == 0)
 	{
-		fprintf(stderr,"FALLBACK_BLT() disp->buffer_addr=%x\n",disp->buffer_addr);
+		fprintf(stderr,"FALLBACK_BLT() disp->buffer_paddr=0x%x\n",disp->buffer_paddr);
 		return FALLBACK_BLT();
 	}
 
@@ -1010,7 +1011,7 @@ int sunxi_g2d_blt(void               *self,
 	 */
 	if(src_bits == dst_bits  && ((src_y < dst_y) || (src_y == dst_y && src_x  < dst_x)))
 	{
-		tmp.dst_image.addr[0]       = disp->buffer_addr;
+		tmp.dst_image.addr[0]       = disp->buffer_paddr;
 		tmp.dst_x                   = 0;
 		tmp.dst_y                   = 0;
 		ioctl(disp->fd_g2d, G2D_CMD_BITBLT, &tmp);
@@ -1020,84 +1021,89 @@ int sunxi_g2d_blt(void               *self,
 		tmp.src_rect.y              = 0;
 		tmp.dst_image.addr[0]       = disp->framebuffer_paddr +
 			((uint8_t *)dst_bits - disp->framebuffer_addr);
-		tmp.src_image.addr[0]       = disp->buffer_addr;
+		tmp.src_image.addr[0]       = disp->buffer_paddr;
 	}
 
 	return ioctl(disp->fd_g2d, G2D_CMD_BITBLT, &tmp) == 0;
 }
 
-
-int sunxi_g2d_stretchblt(void *self,short src_w, short src_h, unsigned char *buf,uint32_t y,uint32_t u,uint32_t v)
+/*****************************************************************************
+ * Use G2D to convert image format and scale image.                          *
+ *****************************************************************************/
+int sunxi_g2d_stretchblt(void *self,short src_w, short src_h, short rect_w, short rect_h, uint32_t offset,uint32_t y,uint32_t u,uint32_t v,short dst_w,short dst_h)
 {
 	g2d_stretchblt str;
 	g2d_image image_front,scn;
 	g2d_rect src_rect,dst_rect;
 	sunxi_disp_t *disp = (sunxi_disp_t *)self;
-	
-	image_front.addr[0] = buf;
-	image_front.w = src_w;
-	image_front.h = src_h;
-	image_front.format = G2D_FMT_PYUV420UVC;
-	image_front.pixel_seq = G2D_SEQ_NORMAL;
-	image_front.addr[1] = buf+image_front.w*image_front.h;
 
-	scn.addr[0] = disp->framebuffer_paddr;
-	scn.w = src_w;
-	scn.h = src_h;
-	scn.format = G2D_FMT_XRGB8888;
-	scn.pixel_seq = G2D_SEQ_NORMAL;
-	src_rect.x = 0;
-	src_rect.y = 0;
-	src_rect.w = src_w;
-	src_rect.h =src_h;
-	dst_rect.x = 0;
-	dst_rect.y = 0;
-	dst_rect.w = src_w;
-	dst_rect.h =src_h;
 	str.flag = G2D_BLT_NONE;
 	str.color                   = 0;
 	str.alpha                   = 0;
 	
-	str.src_image.addr[0] = image_front.addr[0];
-	str.src_image.addr[1] = image_front.addr[1];
-	str.src_image.w = image_front.w;
-	str.src_image.h = image_front.h;
-	str.src_image.format = image_front.format;
-	str.src_image.pixel_seq = image_front.pixel_seq;
-	str.src_rect.x = src_rect.x;
-	str.src_rect.y = src_rect.y;
-	str.src_rect.w = src_rect.w;
-	str.src_rect.h = src_rect.h;
+	str.src_image.addr[0] = disp->buffer_paddr+offset;
+	str.src_image.addr[1] = disp->buffer_paddr+offset+u;
+	str.src_image.w = src_w;
+	str.src_image.h = src_h;
+	str.src_image.format = G2D_FMT_PYUV420UVC;
+	str.src_image.pixel_seq = G2D_SEQ_NORMAL;
+	str.src_rect.x = 0;
+	str.src_rect.y = 0;
+	str.src_rect.w = rect_w;
+	str.src_rect.h = rect_h;
 	
-	str.dst_image.addr[0] = scn.addr[0];
-	str.dst_image.w = scn.w;
-	str.dst_image.h = scn.h;
-	str.dst_image.format = scn.format;
-	str.dst_image.pixel_seq = scn.pixel_seq;
-	str.dst_rect.x = dst_rect.x;
-	str.dst_rect.y = dst_rect.y;
-	str.dst_rect.w = dst_rect.w;
-	str.dst_rect.h = dst_rect.h;
-	int ret = ioctl(disp->fd_g2d,G2D_CMD_BITBLT, &str);//G2D_CMD_BITBLT G2D_CMD_STRETCHBLT
+	str.dst_image.addr[0] = disp->framebuffer_paddr+offset;
+	str.dst_image.w = dst_w;
+	str.dst_image.h = dst_h;
+	str.dst_image.format = G2D_FMT_ARGB_AYUV8888;
+	str.dst_image.pixel_seq = G2D_SEQ_NORMAL;
+	str.dst_rect.x = 0;
+	str.dst_rect.y = 0;
+	str.dst_rect.w = dst_w;
+	str.dst_rect.h = dst_h;
+
+	int ret = ioctl(disp->ion_fd, ION_IOC_SYNC, &(disp->handle_data));
+	if(ret < 0)
+	{
+		fprintf(stderr,"ION_IOC_SYNC error! ret=%d\n",ret);
+		
+	}
+
+	struct ion_custom_data custom_data;
+	sunxi_cache_range range;
+	range.start = (unsigned long)disp->buffer_addr + offset;
+	range.end = (unsigned long)disp->buffer_addr + offset + v + v -u;
+	custom_data.cmd = ION_IOC_SUNXI_FLUSH_RANGE;
+	custom_data.arg = (unsigned long)&range;
+	ret = ioctl(disp->ion_fd, ION_IOC_CUSTOM, &custom_data);
+	if(ret < 0) {
+		fprintf(stderr,"%s(%d): ION_IOC_CUSTOM err, ret %d\n", __func__, __LINE__, ret);
+	}
+
+	ret = ioctl(disp->fd_g2d,G2D_CMD_STRETCHBLT, &str);//G2D_CMD_BITBLT G2D_CMD_STRETCHBLT
 	if(ret < 0)
 	{
 		fprintf(stderr,"g2d_stretchblt error! ret=%d\n",ret);
 		
 	}
+
 	return ret;
-	
 }
+
+/*****************************************************************************
+ * Allocate a physical memory continuously for G2D accelerate.               *
+ *****************************************************************************/
 void* sunxi_ion_alloc(sunxi_disp_t *disp, int len)
 {
 	struct ion_allocation_data alloc_data;
 	if(len <= 0)
 		return NULL;
-	disp->ion_fd = NULL;	
+	disp->ion_fd = -1;	
 	int ret = -1, fd;
 
 	if((fd = open(ION_DEV_NAME, O_RDWR)) < 0) {
 		fprintf(stderr,"%s(%d) err: open %s dev failed\n", __func__, __LINE__, ION_DEV_NAME);
-		return -1;
+		return NULL;
 	}
 
 	/* alloc buffer */
@@ -1113,6 +1119,21 @@ void* sunxi_ion_alloc(sunxi_disp_t *disp, int len)
 	}
 	disp->ion_fd = fd;
 	disp->handle_data.handle = alloc_data.handle;
+
+	//get phys_addr
+	struct ion_custom_data custom_data;
+	sunxi_phys_data phys_data;
+
+	custom_data.cmd = ION_IOC_SUNXI_PHYS_ADDR;
+	phys_data.handle = alloc_data.handle;
+	custom_data.arg = (unsigned long)&phys_data;
+	ret = ioctl(disp->ion_fd, ION_IOC_CUSTOM, &custom_data);
+	if(ret) {
+		printf("%s(%d): ION_IOC_SUNXI_PHYS_ADDR err, ret %d\n", __func__, __LINE__, ret);
+		disp->buffer_paddr = 0;
+	}else{
+		disp->buffer_paddr = phys_data.phys_addr;
+	}
 	
 	struct ion_fd_data fd_data;
 	
@@ -1139,7 +1160,7 @@ int sunxi_ion_free(sunxi_disp_t *disp)
 {
 	int ret = -1;
 	if(disp->handle_data.handle == NULL)
-		return NULL;
+		return -1;
 	munmap(disp->buffer_addr, disp->framebuffer_size);
 	ret = ioctl(disp->ion_fd, ION_IOC_FREE, &(disp->handle_data.handle));
 	if(ret) {
@@ -1153,6 +1174,13 @@ out:
 	return ret;
 }
 
+/*****************************************************************************
+ * Set a part of image in layer to show on window.                           *
+ * This function just for A80 and H8,not for A10/A20.                        *
+ * 当视频的一部分被拖放到屏幕以外时，我们需要重新计算视频应该显示的区域。          *
+ * 这个函数实现的原理是，根据缩放比例，计算出视频图层仍然在屏幕中的区域，然后将这   *
+ * 部分区域设置为显示区域。                                                    *
+ *****************************************************************************/
 int sunxi_resize_layer_window(sunxi_disp_t *disp, int drw_x, int drw_y, int drw_w, int drw_h, int src_x, int src_y, int src_w, int src_h)
 {
 	int x,y,w,h;
@@ -1165,39 +1193,78 @@ int sunxi_resize_layer_window(sunxi_disp_t *disp, int drw_x, int drw_y, int drw_
 	sy = src_y;
 	sw = src_w;
 	sh = src_h;
-	if(drw_x < 0)
-	{
-		x = 0;
-		w = drw_x + drw_w;
-		sx = 0-(drw_x * ((float)src_w/drw_w));
-		sw = w * ((float)src_w/drw_w);
-	}
-	else if(drw_x+drw_w > src_w)
-	{
-		w = src_w - drw_x;
-		sw = w * ((float)src_w/drw_w);
-	}
 
-	if(drw_y < 0)
-	{
-		y = 0;
-		h = drw_h + drw_y;
-		sy = 0-(drw_y * ((float)src_h/drw_h));
-		sh = h * ((float)src_h/drw_h);
-	}
-	else if(drw_y+drw_h > src_h)
-	{
-		h = src_h - drw_y;
-		sh = h * ((float)src_h/drw_h);
-	}
+	disp_layer_info layer_video,layer_win;
+	uint32_t args_video[4];
+	uint32_t args_win[4];
 
-	disp_layer_info layer_video;
-	uint32_t tmp[4];
-	tmp[0] = disp->fb_id;
-	tmp[1] = disp->layer_id;
-	tmp[2] = (uintptr_t)&layer_video;
-	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_GET_INFO, tmp) < 0)
+	args_video[0] = disp->fb_id;
+	args_video[1] = disp->layer_id;
+	args_video[2] = (uintptr_t)&layer_video;
+	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_GET_INFO, &args_video) < 0)
 		return -1;
+
+	args_win[0] = disp->fb_id;
+	args_win[1] = disp->gfx_layer_id;
+	args_win[2] = (uintptr_t)&layer_win;
+	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_GET_INFO, &args_win) < 0)
+		return -1;
+
+	if(layer_video.mode == DISP_LAYER_WORK_MODE_SCALER)
+	{
+		if(drw_x < 0)
+		{
+			x = 0;
+			w = drw_x + drw_w;
+			sx = 0-(drw_x * ((float)src_w/drw_w));
+			sw = w * ((float)src_w/drw_w);
+		}
+		else if(drw_x+drw_w > layer_win.fb.src_win.width)
+		{
+			w = layer_win.fb.src_win.width - drw_x;
+			sw = w * ((float)src_w/drw_w);
+		}
+	
+		if(drw_y < 0)
+		{
+			y = 0;
+			h = drw_h + drw_y;
+			sy = 0-(drw_y * ((float)src_h/drw_h));
+			sh = h * ((float)src_h/drw_h);
+		}
+		else if(drw_y+drw_h > layer_win.fb.src_win.height)
+		{
+			h = layer_win.fb.src_win.height - drw_y;
+			sh = h * ((float)src_h/drw_h);
+		}		
+	}
+	else{
+		sw = w;
+		sh = h;
+
+#if 1
+		if(drw_x < 0)
+		{
+			x = 0;
+			sx = 0-drw_x;
+		}
+		else if(drw_x+drw_w > layer_win.fb.src_win.width)
+		{
+			w = layer_win.fb.src_win.width - drw_x;
+		}
+	
+		if(drw_y < 0)
+		{
+			y = 0;
+			sy = 0-drw_y;
+		}
+		else if(drw_y+drw_h > layer_win.fb.src_win.height)
+		{
+			h = layer_win.fb.src_win.height - drw_y;
+		}		
+#endif
+	}
+
 	layer_video.fb.src_win.x =sx;
 	layer_video.fb.src_win.y =sy;
 	layer_video.fb.src_win.width =sw;
@@ -1206,11 +1273,11 @@ int sunxi_resize_layer_window(sunxi_disp_t *disp, int drw_x, int drw_y, int drw_
 	layer_video.screen_win.y =y;
 	layer_video.screen_win.width =w;
 	layer_video.screen_win.height =h;
-	tmp[0] = disp->fb_id;
-	tmp[1] = disp->layer_id;
-	tmp[2] = (uintptr_t)&layer_video;
-	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_SET_INFO, tmp) < 0)
+	args_video[0] = disp->fb_id;
+	args_video[1] = disp->layer_id;
+	args_video[2] = (uintptr_t)&layer_video;
+	if (ioctl(disp->fd_disp, DISP_CMD_LAYER_SET_INFO, &args_video) < 0)
 		return -1;
-
+	return 0;
 }
 

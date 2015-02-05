@@ -40,10 +40,10 @@
 #define DISPLAY_RESOLUTION 1920*1080*60
 
 /* 如果视频缩放时会出现屏幕被拉伸，说明你的内核或者sys_config.fex和我调试的不匹配
- * 那么你需要减少这个宏定义到值，EFFICIENCE的取值范围在0.8～2.7
+ * 那么你需要减少这个宏定义的值，EFFICIENCE的取值范围在0.8～2.7
  * 当然，这个值在取值范围内尽可能取大一点
  * If screen is stretch when resize video player window, then you need to reduce 
- * EFFICIENCE value. The value range of EFFICIENCE if 0.8~2.7
+ * EFFICIENCE value. The value range of EFFICIENCE is 0.8~2.7
  */
 #define EFFICIENCE 2.6
 /*****************************************************************************/
@@ -239,8 +239,18 @@ xPutImage(ScrnInfoPtr pScrn, short src_x, short src_y, short drw_x, short drw_y,
 			}
 		}
 
-		memcpy(disp->buffer_addr+self->overlay_data_offs, buf, u - y);
-		sunxi_g2d_stretchblt(disp, width, height,src_w,src_h, self->overlay_data_offs,y, u, v,drw_w,drw_h);
+		/* 因为硬件解码输出的格式是I420，并且已经32位对齐，所以这里只考虑YV12的格式 */
+		if((width%32) != 0 && image == FOURCC_YV12)
+		{
+			memcpy(disp->buffer_addr+self->overlay_data_offs, buf, height * width);
+			memset(disp->buffer_addr+self->overlay_data_offs+height * width,0,u-height * width);
+			sunxi_g2d_stretchblt(disp, y_stride, height, width, src_h, self->overlay_data_offs, y, u, v, drw_w, drw_h);
+		}else
+		{
+			memcpy(disp->buffer_addr+self->overlay_data_offs, buf, u - y);
+			sunxi_g2d_stretchblt(disp, width, height, src_w, src_h, self->overlay_data_offs, y, u, v, drw_w, drw_h);
+		}
+
 		sunxi_layer_set_rgb_input_buffer(disp, 32, self->overlay_data_offs, drw_w, drw_h, drw_w);
 		sunxi_resize_layer_window(disp, drw_x, drw_y, drw_w,  drw_h, src_x, src_y, drw_w, drw_h);
 	}

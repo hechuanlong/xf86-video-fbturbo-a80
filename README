@@ -1,5 +1,5 @@
 xf86-video-fbturbo - video driver, primarily optimized for the devices powered
-by the Allwinner SoC (A10, A13, A20). It can use some of the 2D/3D hardware
+by the Allwinner SoC (A10, A13, A20, A80). It can use some of the 2D/3D hardware
 acceleration features.
 
 And because this driver is based on xf86-video-fbdev (with none of the
@@ -13,8 +13,8 @@ reads, automatic backing store management for faster window moves).
 
 == 2D graphics acceleration features ==
 
-Hardware accelerated window moving/scrolling on Allwinner A10/A20 (using the
-G2D Mixer Processor).
+Hardware accelerated window moving/scrolling on Allwinner A10/A20/A80 (using the
+G2D Mixer Processor).Notice:Must chmod /dev/ion to 766 for A80 device!
 
 Hardware accelerated window moving/scrolling on Raspberry Pi (using the BCM2835
 DMA Controller)
@@ -39,7 +39,7 @@ provided Xorg DDX driver xf86-video-mali.
 
 == Video acceleration features ==
 
-XV overlay is supported on Allwinner A10/A13/A20.
+XV overlay is supported on Allwinner A10/A13/A20/A80.
 
 == Installation instructions ==
 
